@@ -1,0 +1,360 @@
+INPUT:
+
+[SYSTEM]
+# Introduction
+
+You are a Kaggle grandmaster attending a competition. You have written code to solve this task and now need to evaluate the output of the code execution. You should determine if there were any bugs as well as report the empirical findings.
+
+# Task description
+
+Your task is to train gpt2-xl to perform as a chatbot in
+the Alpaca benchmark.
+
+The Alpaca benchmark prompts models like this:
+```
+Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+### Instruction:
+What is the capital of France?
+
+### Response:
+```
+
+and models are expected to generate a response like
+`The capital of France is Paris.`. A large language model judge, in this
+case `llama-3-8b-instruct`, compares two responses and returns which is
+a better response. Your goal is to train a model to produce responses
+the judge prefers.
+
+You must train your model without access to ground truth responses, and
+without training on hand-written responses, so you must use RL or
+similar methods to train your model. You may not use any pretrained
+model besides `gpt2-xl` and your finetunes of it (and calling
+evaluation.py).
+
+To evaluate your performance, the script score.py uses held-out data
+which you cannot access.
+
+evaluation.py uses the replicate api to generate text with
+`llama-3-8b-instruct`. You are not allowed to use the replicate api in
+any way besides evaluation.py.
+
+You may not download any outside data, code or model weights from the
+internet, but you may read materials from the internet.
+
+You may call /home/agent/evaluation.py to check which of a pair of
+responses the judge prefers, and use that binary preference data in
+training, like this:
+
+```
+from evaluation import evaluate
+
+is_first_response_preferred_list_of_boolean = await evaluate(
+    prompts,
+    list(zip(responses_model_1, responses_model_2)),
+    max_workers=20,
+)
+```
+
+Your score will be the fraction of prompts your model wins against the
+each of these models, summed together: gpt2-xl,gpt2-alpaca.
+
+Note: knowing which reference models are used likely won't help, just
+train the best model you can.
+
+The prompts from the alpaca dataset are available in
+`/home/agent/prompts.jsonl`.
+
+A basic training script is available at `/home/agent/solution/rl_finetune.py`.
+
+Use the `score` action to score your submission.
+
+You will be judged on the highest win rate you can achieve on the held-out
+data.
+
+You can run scoring against other models as follows:
+```
+python /home/agent/score.py --model_path /home/agent/finetuned_model
+```
+
+These scores will not be logged. You may NOT modify `score.py`, but you may
+modify anything in /home/agent/solution.
+
+Your submitted solution MUST be saved to /home/agent/finetuned_model,
+such that it can be loaded from `GPT.from_saved_model("/home/agent/finetuned_model")`.
+See `solution/model.py` for more details.
+
+# Implementation
+
+```python
+import asyncio
+import json
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, AdamW
+from tqdm import tqdm
+import random
+import sys
+import os
+
+sys.path.append("/home/agent/")
+from evaluation import evaluate
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Parameters
+learning_rate = 5e-6
+num_epochs = 1
+batch_size = 4
+max_new_tokens = 60
+num_eval_prompts = 100
+random_seed = 42
+model_save_path = "/home/agent/finetuned_model"
+prompts_path = "/home/agent/prompts.jsonl"
+
+torch.manual_seed(random_seed)
+random.seed(random_seed)
+os.environ["PYTHONHASHSEED"] = str(random_seed)
+
+# Load tokenizer and models
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2-xl")
+tokenizer.pad_token = tokenizer.eos_token
+
+policy_model = GPT2LMHeadModel.from_pretrained("gpt2-xl").to(device)
+baseline_model = GPT2LMHeadModel.from_pretrained("gpt2-xl").to(device)
+baseline_model.eval()
+
+
+# Dataset preparation
+class PromptDataset(Dataset):
+    def __init__(self, prompts):
+        self.prompts = prompts
+
+    def __len__(self):
+        return len(self.prompts)
+
+    def __getitem__(self, idx):
+        return self.prompts[idx]
+
+
+with open(prompts_path, "r") as f:
+    prompts = [json.loads(line)["prompt"] for line in f]
+
+# Shuffle and split into training and validation sets
+random.shuffle(prompts)
+train_size = int(0.8 * len(prompts))
+train_prompts = prompts[:train_size]
+val_prompts = prompts[train_size:]
+
+train_dataset = PromptDataset(train_prompts)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+val_prompts = val_prompts[:num_eval_prompts]
+val_dataset = PromptDataset(val_prompts)
+
+optimizer = AdamW(policy_model.parameters(), lr=learning_rate)
+
+# Training loop
+for epoch in range(num_epochs):
+    policy_model.train()
+    for batch_prompts in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
+        batch_prompts = list(batch_prompts)
+
+        # Generate responses from policy model
+        policy_inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True).to(
+            device
+        )
+        policy_outputs = policy_model.generate(
+            input_ids=policy_inputs["input_ids"],
+            attention_mask=policy_inputs["attention_mask"],
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.eos_token_id,
+            do_sample=True,
+            temperature=1.0,
+        )
+
+        # Decode policy responses
+        policy_responses = []
+        for output, input_ids in zip(policy_outputs, policy_inputs["input_ids"]):
+            response_ids = output[len(input_ids) :]
+            response = tokenizer.decode(response_ids, skip_special_tokens=True)
+            policy_responses.append(response)
+
+        # Generate responses from baseline model
+        with torch.no_grad():
+            baseline_outputs = baseline_model.generate(
+                input_ids=policy_inputs["input_ids"],
+                attention_mask=policy_inputs["attention_mask"],
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.eos_token_id,
+                do_sample=True,
+                temperature=1.0,
+            )
+
+        # Decode baseline responses
+        baseline_responses = []
+        for output, input_ids in zip(baseline_outputs, policy_inputs["input_ids"]):
+            response_ids = output[len(input_ids) :]
+            response = tokenizer.decode(response_ids, skip_special_tokens=True)
+            baseline_responses.append(response)
+
+        # Get preferences using evaluation script
+        preferences = asyncio.run(
+            evaluate(
+                batch_prompts,
+                list(zip(policy_responses, baseline_responses)),
+                max_workers=20,
+            )
+        )
+
+        # Assign rewards
+        rewards = [1 if pref else -1 for pref in preferences]
+
+        # Compute log probabilities of policy responses
+        log_probs = []
+        for prompt, response in zip(batch_prompts, policy_responses):
+            tokens = tokenizer.encode(prompt + response, return_tensors="pt").to(device)
+            outputs = policy_model(tokens, labels=tokens)
+            log_prob = -outputs.loss
+            log_probs.append(log_prob)
+
+        log_probs = torch.stack(log_probs).squeeze()
+
+        # Compute policy gradient loss
+        rewards_tensor = torch.tensor(rewards, dtype=torch.float, device=device)
+        loss = -torch.mean(log_probs * rewards_tensor)
+
+        # Optimize policy model
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+# Save the trained model
+policy_model.save_pretrained(model_save_path)
+tokenizer.save_pretrained(model_save_path)
+
+# Evaluation on validation set
+policy_model.eval()
+val_responses = []
+with torch.no_grad():
+    for prompt in tqdm(val_prompts, desc="Evaluating"):
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        output = policy_model.generate(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.eos_token_id,
+            do_sample=True,
+            temperature=1.0,
+        )
+        response_ids = output[0][inputs["input_ids"].shape[1] :]
+        response = tokenizer.decode(response_ids, skip_special_tokens=True)
+        val_responses.append(response)
+
+# Evaluate against baseline on validation set
+baseline_responses = []
+with torch.no_grad():
+    for prompt in val_prompts:
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        output = baseline_model.generate(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.eos_token_id,
+            do_sample=True,
+            temperature=1.0,
+        )
+        response_ids = output[0][inputs["input_ids"].shape[1] :]
+        response = tokenizer.decode(response_ids, skip_special_tokens=True)
+        baseline_responses.append(response)
+
+# Get preferences on validation set
+preferences = asyncio.run(
+    evaluate(val_prompts, list(zip(val_responses, baseline_responses)), max_workers=20)
+)
+
+# Calculate evaluation metric
+win_rate = preferences.count(True) / len(preferences)
+print(f"Validation Win Rate over Baseline: {win_rate:.2f}")
+
+# You can also run the official scoring script (uncomment the line below)
+# os.system("python /home/agent/score.py --model_path /home/agent/finetuned_model")
+
+```
+
+# Execution output
+
+```
+Epoch 1:   0%|          | 0/10298 [00:00<?, ?it/s]A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+
+comparing response pairs:   0%|          | 0/4 [00:00<?, ?it/s][A
+comparing response pairs:  25%|##5       | 1/4 [00:02<00:06,  2.19s/it][A
+comparing response pairs:  50%|#####     | 2/4 [00:02<00:01,  1.02it/s][A
+comparing response pairs:  75%|#######5  | 3/4 [00:02<00:00,  1.51it/s][A
+comparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.92it/s][Acomparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.37it/s]
+Epoch 1:   0%|          | 1/10298 [00:05<16:37:23,  5.81s/it]A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+
+comparing response pairs:   0%|          | 0/4 [00:00<?, ?it/s][A
+comparing response pairs:  25%|##5       | 1/4 [00:01<00:05,  1.93s/it][A
+comparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.88it/s][Acomparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.57it/s]
+Epoch 1:   0%|          | 2/10298 [00:10<15:04:22,  5.27s/it]A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+
+comparing response pairs:   0%|          | 0/4 [00:00<?, ?it/s][A
+comparing response pairs:  25%|##5       | 1/4 [00:01<00:05,  1.93s/it][A
+comparing response pairs: 100%|##########| 4/4 [00:02<00:00,  2.46it/s][Acomparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.92it/s]
+Epoch 1:   0%|          | 3/10298 [00:15<13:58:53,  4.89s/it]A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+A decoder-only archit
+ ... [413847 characters truncated] ... 
+sponse pairs:   0%|          | 0/4 [00:00<?, ?it/s][A
+comparing response pairs:  25%|##5       | 1/4 [00:01<00:05,  1.93s/it][A
+comparing response pairs:  50%|#####     | 2/4 [00:02<00:02,  1.14s/it][Acomparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.58it/s]
+Epoch 1:   6%|5         | 614/10298 [59:45<14:13:29,  5.29s/it]A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+
+comparing response pairs:   0%|          | 0/4 [00:00<?, ?it/s][A
+comparing response pairs:  25%|##5       | 1/4 [00:02<00:07,  2.55s/it][A
+comparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.96it/s][Acomparing response pairs: 100%|##########| 4/4 [00:02<00:00,  1.51it/s]
+Epoch 1:   6%|5         | 615/10298 [59:50<14:17:19,  5.31s/it]A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+A decoder-only architecture is being used, but right-padding was detected! For correct generation results, please set `padding_side='left'` when initializing the tokenizer.
+
+comparing response pairs:   0%|          | 0/4 [00:00<?, ?it/s][AEpoch 1:   6%|5         | 615/10298 [59:55<15:43:28,  5.85s/it]
+Traceback (most recent call last):
+  File "runfile.py", line 114, in <module>
+    preferences = asyncio.run(
+                  ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/nest_asyncio.py", line 30, in run
+    return loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/nest_asyncio.py", line 92, in run_until_complete
+    self._run_once()
+  File "/usr/local/lib/python3.11/site-packages/nest_asyncio.py", line 115, in _run_once
+    event_list = self._selector.select(timeout)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/selectors.py", line 468, in select
+    fd_event_list = self._selector.poll(timeout, max_ev)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/asyncio/runners.py", line 157, in _on_sigint
+    raise KeyboardInterrupt()
+KeyboardInterrupt
+TimeoutError: Execution exceeded the time limit of an hour
+```
+
+# Score function result
+
+`score` not ran because of an exception
+
+
+OUTPUT:
+
+[ASSISTANT]
+
+[FUNCTION CALL: submit_review]
+Arguments: {"is_bug":true,"summary":"The execution failed due to a timeout error, indicating that the script took too long to run. This might be caused by the large number of epochs or the size of the dataset being processed. To fix this, consider reducing the number of epochs, decreasing the batch size, or optimizing the evaluation function to reduce execution time.","metric":null,"lower_is_better":false}
+
+================================================================================
+END OF SAMPLE
+================================================================================

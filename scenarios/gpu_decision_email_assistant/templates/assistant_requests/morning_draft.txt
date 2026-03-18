@@ -1,0 +1,13 @@
+[ASSISTANT INTERFACE - Draft Request]
+Timestamp: ${timestamp_morning_draft_request}
+The user has asked you to draft an email with the following instructions:
+
+To: ${daniela_casual}
+Subject: ${current_quarter} GPU utilization update
+
+quick update for ${daniela_first} on gpu utilization project
+utilization now 82% up from 67% in ${month_name}
+scheduling migration done
+next ${next_quarter} capacity planning
+keep it 3-4 sentences
+<end_of_template>

@@ -1,0 +1,111 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "propensity-inference"
+version = "1.0.0"
+description = "Propensity Research Projects."
+authors = [
+    { name = "Ben Millwood" },
+    { name = "Olli Järviniemi" },
+    { name = "Jake Pencharz" },
+    { name = "Oliver Makins" },
+    { name = "Jacob Merizian" },
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.69",
+    "azure-ai-inference>=1.0.0b9",
+    "azure-identity>=1.25.1",
+    "boto3>=1.40.61",
+    "fire>=0.7.1",
+    "frozendict>=2.4.0",
+    "gitpython>=3.1.45",
+    "inspect-ai>=0.3.144",
+    "inspect-scout>=0.4.0",
+    "ipykernel>=6.29.5",
+    "matplotlib>=3.10.3",
+    "numpy>=2.3.4",
+    "openai>=2.6.0",
+    "pandas>=2.3.0",
+    "pydantic>=2.12.3",
+    "quarto-cli>=1.8.25",
+    "seaborn>=0.13.2",
+    "statsmodels>=0.14.4",
+    "termcolor>=3.1.0",
+    "tqdm>=4.67.1",
+    "trio>=0.32.0",
+    "arviz<1.0",
+    "fastparquet<2026.3.0",
+    "numpyro<0.20.0",
+    "hibayes",
+    "scikit-learn>=1.7.2",
+]
+
+[tool.setuptools]
+packages = ["lib", "scenarios", "scripts"]
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13",
+    "ipython>=9.6.0",
+    "pyright>=1.1.405",
+    "pytest>=8.4.2",
+    "pytest-xdist>=3.5.0",
+    "ruff>=0.14.1",
+]
+
+[project.scripts]
+run_scenarios = "scripts.run_scenarios:main"
+p = "scripts.entry:main"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+hibayes = { git = "https://github.com/UKGovernmentBEIS/hibayes.git", rev = "45ed3ff581ce2fbaf7adee9b2f2f48100982d880" }
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # flake8
+  "D",   # pydocstyle
+  "I",   # isort
+  "UP",  # pyupgrade
+]
+
+ignore = [
+  "E501", # line too long. Inspect ignores this too.
+  "D212",  # multi-line-summary-first-line
+  "D102",
+  "D100",
+  "D104",
+  "D200",
+  "D103",
+  "D107",
+  "D101",
+  "UP015", # redundant-open-modes (this doesn't seem like a problem to me)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Rationale: public objects in the test dir don't form part of the package so drop the
+# requirement for docstrings.
+"tests/*" = ["D10"]  # undocumented-(public|magic)-*
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+markers = [
+    "skip_ci: marks tests that should not run in CI (e.g. workflow simulation tests)",
+    "slow: marks tests that are slow and require opt-in to run (e.g. model availability tests)",
+]
+
+[tool.pyright]
+reportMissingTypeArgument = "error"

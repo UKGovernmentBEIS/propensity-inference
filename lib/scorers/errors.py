@@ -1,0 +1,2 @@
+class ScorerFailure(Exception):
+    pass

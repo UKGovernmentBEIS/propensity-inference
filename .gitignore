@@ -1,0 +1,58 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Environments
+.env
+.venv
+
+# Inspect
+*.eval
+logs/
+inspect.log
+
+.claude/settings.local.json
+
+reviews/
+
+# Sensitive files
+claude-context/git-ignored/
+
+# Analysis script outputs
+analysis_output/
+scripts/effect_size_power_analysis.py
+
+# Paper cache - generated data files (regenerable from S3/posteriors)
+paper_cache/
+scripts/paper/deprecated/
+scripts/paper/paper_cache/
+*.zip
