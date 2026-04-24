@@ -1,6 +1,6 @@
 # Propensity Inference: Environmental Contributors to Unsanctioned LLM Behaviour
 
-This codebase is a reference implementation for our experiments in the paper Propensity Inference: Environmental Contributors to Unsanctioned LLM Behaviour, lightly edited from the original implementation. Twelve factors (6 strategic, 6 non-strategic) are systematically varied across 11 evaluation environments. Effect sizes are quantified via Bayesian generalised linear models.
+This codebase is a reference implementation for our experiments in the paper [Propensity Inference: Environmental Contributors to Unsanctioned LLM Behaviour](https://arxiv.org/abs/2604.21098), lightly edited from the original implementation. Twelve factors (6 strategic, 6 non-strategic) are systematically varied across 11 evaluation environments. Effect sizes are quantified via Bayesian generalised linear models.
 
 ## Dataset
 
